@@ -14,6 +14,9 @@ load_dotenv()
 # --- OPENCLAW SESSION PROXY (Stateless / Mega-Token) ---
 app = Flask(__name__)
 
+# Render provides the port via the PORT environment variable
+RENDER_PORT = int(os.environ.get("PORT", 8080))
+
 @app.route('/v1/chat/completions', methods=['POST'])
 def chat_proxy():
     try:
@@ -72,8 +75,8 @@ def chat_proxy():
         return {"error": str(e)}, 500
 
 def run_proxy():
-    print("--- OpenClaw Proxy Active (port 8080) ---")
-    app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
+    print(f"--- OpenClaw Proxy Active (port {RENDER_PORT}) ---")
+    app.run(host='0.0.0.0', port=RENDER_PORT, debug=False, use_reloader=False)
 
 threading.Thread(target=run_proxy, daemon=True).start()
 
@@ -120,7 +123,7 @@ async def my_agent(ctx: agents.JobContext):
 
     openclaw_llm = openai.LLM(
         model="main",
-        base_url="http://localhost:8080/v1",
+        base_url=f"http://localhost:{RENDER_PORT}/v1",
         api_key=mega_token,
     )
 
