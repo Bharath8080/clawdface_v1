@@ -106,8 +106,8 @@ TRUGEN_API_KEY=...
 ### 2. Setup
 ```bash
 # Clone the repository
-git clone https://github.com/Bharath8080/clawdface.git
-cd clawdface
+git clone https://github.com/Bharath8080/clawdface_v1.git
+cd clawdface_v1
 
 # Install Frontend
 cd frontend
