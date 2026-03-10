@@ -17,6 +17,10 @@ app = Flask(__name__)
 # Render provides the port via the PORT environment variable
 RENDER_PORT = int(os.environ.get("PORT", 8080))
 
+@app.route('/')
+def health_check():
+    return {"status": "ClawdFace Agent Proxy Active", "version": "1.0.0"}, 200
+
 @app.route('/v1/chat/completions', methods=['POST'])
 def chat_proxy():
     try:
