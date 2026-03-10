@@ -8,7 +8,7 @@ This directory contains the production-grade frontend for the ClawdFace platform
 
 To achieve a "No-DB" deployment, the frontend implements a **Hybrid Storage System**:
 
-1.  **localStorage (Primary)**: Stores user configuration (OpenClaw URL, tokens) directly in the browser. This ensures that when deployed to Vercel (which has a read-only filesystem), user settings remain persistent for the user across sessions.
+1.  **localStorage (Primary)**: Stores user configuration (OpenClaw URL, tokens) directly in the browser. This ensures that when deployed to serverless environments (which may have a read-only filesystem), user settings remain persistent for the user across sessions.
 2.  **API Sync (Secondary)**: Every time a session starts, the frontend calls the `/api/user-config` endpoint. In local development, this endpoint saves the settings to `data/user-configs/[email].json` for visibility and archiving.
 3.  **Bootstrap Logic**: On initial load, if `localStorage` is empty, the app attempts to "bootstrap" by fetching the user's last saved config from the server-side JSON archive.
 
@@ -20,7 +20,7 @@ To achieve a "No-DB" deployment, the frontend implements a **Hybrid Storage Syst
 - **Context Provider**: `GoogleOAuthProvider` wraps the application (see `components/Providers.tsx`).
 - **Hook-based Login**: Uses the `useGoogleLogin` hook to fetch high-fidelity profiles from the Google UserInfo API.
 - **Persistence**: Successful sign-ins are stored in `localStorage` under `clawdface_auth`.
-- **Environment Verification**: Access is restricted using the `VERIFIED_EMAILS` environment variable. This allows the administrator to authorize users globally via Vercel's environment settings without managing a database table.
+- **Environment Verification**: Access is restricted using the `VERIFIED_EMAILS` environment variable. This allows the administrator to authorize users globally via environment settings without managing a database table.
 
 ---
 
@@ -59,9 +59,3 @@ Simple email-based verification system for authorized users.
 
 ---
 
-## 🚀 Deployment
-
-The frontend is optimized for **Vercel**:
-- **Build Command**: `pnpm run build`
-- **Output**: Static assets + Serverless Functions.
-- **Persistence**: Relies on `localStorage` for user-specific data and `VERIFIED_EMAILS` for authorization.

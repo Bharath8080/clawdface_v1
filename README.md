@@ -1,6 +1,6 @@
 # ClawdFace: Production-Grade Video AI Platform
 
-ClawdFace is a high-performance, real-time Video AI platform built with Next.js and LiveKit. It features a unique **Stateless / No-DB Architecture**, making it infinitely scalable and easy to deploy on serverless platforms like Vercel without the overhead of external databases.
+ClawdFace is a high-performance, real-time Video AI platform built with Next.js and LiveKit. It features a unique **Stateless / No-DB Architecture**, making it infinitely scalable and easy to deploy on serverless platforms without the overhead of external databases.
 
 ---
 
@@ -115,7 +115,7 @@ npm install
 
 # Install Backend
 cd ..
-pip install -e .
+uv sync
 ```
 
 ### 3. Running Locally
@@ -124,13 +124,6 @@ pip install -e .
 
 ---
 
-## 🚢 Deployment (Vercel)
-
-ClawdFace is designed to be **Deploy-and-Forget**:
-1. Connect your GitHub repository to Vercel.
-2. Add the environment variables listed above.
-3. The build command is `npm run build`.
-4. Deploy! No database setup is required.
 
 ---
 
