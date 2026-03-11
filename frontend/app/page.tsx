@@ -237,20 +237,28 @@ function SessionConfigForm({
     label: string,
     icon: React.ReactNode,
     placeholder: string,
-    type: "text" | "password" = "text"
+    type: "text" | "password" = "text",
+    prefix?: string
   ) => (
     <div className="flex flex-col gap-1.5">
       <label className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[#6b7280] flex items-center gap-1.5">
         <span className="text-[#9ca3af]">{icon}</span>
         {label}
       </label>
-      <div className="relative">
+      <div className="relative flex items-center">
+        {prefix && (
+          <span className="absolute left-4 text-[#4b5563] font-mono text-[14px] pointer-events-none select-none">
+            {prefix}
+          </span>
+        )}
         <input
           type={key === "gatewayToken" && !showToken ? "password" : "text"}
           value={config[key]}
           onChange={(e) => setConfig({ ...config, [key]: e.target.value })}
           placeholder={placeholder}
-          className="w-full bg-[#0d0d0d] border border-[#242424] rounded-xl px-4 py-3 text-[14px] text-white placeholder-[#3a3a3a] focus:outline-none focus:border-[#00E3AA]/50 focus:ring-1 focus:ring-[#00E3AA]/20 transition-all duration-200 pr-10 font-mono"
+          className={`w-full bg-[#0d0d0d] border border-[#242424] rounded-xl py-3 text-[14px] text-white placeholder-[#3a3a3a] focus:outline-none focus:border-[#00E3AA]/50 focus:ring-1 focus:ring-[#00E3AA]/20 transition-all duration-200 pr-10 font-mono ${
+            prefix ? "pl-[105px]" : "px-4"
+          }`}
         />
         {key === "gatewayToken" && (
           <button
@@ -299,7 +307,7 @@ function SessionConfigForm({
         <div className="bg-[#111111] border border-[#1f1f1f] rounded-2xl p-6 flex flex-col gap-5 shadow-2xl">
           {field("openclawUrl",  "OpenClaw URL",     <LinkIcon />,   "http://localhost:18789")}
           {field("gatewayToken", "Gateway Token",    <KeyIcon />,    "Enter your gateway token", "password")}
-          {field("sessionKey",   "Session Key",      <HashIcon2 />,  "bot-name (prefix agent:main: added automatically)")}
+          {field("sessionKey",   "Session Key",      <HashIcon2 />,  "bot-name", "text", "agent:main:")}
 
           {/* Connect Button */}
           <button
