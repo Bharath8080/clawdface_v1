@@ -25,9 +25,9 @@ import { getUser } from "@/lib/auth";
 
 // ─── Session Config Defaults ────────────────────────────────────────────────
 const DEFAULTS = {
-  openclawUrl:  "https://pertinacious-speechlessly-lidia.ngrok-free.dev",
+  openclawUrl:  "",
   gatewayToken: "",
-  sessionKey:   "agent:main:bot",
+  sessionKey:   "",
 };
 
 // ─── Icons ──────────────────────────────────────────────────────────────────
@@ -120,15 +120,19 @@ export default function Page() {
       }
     }
 
-    const url = new URL(
-      process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT ?? "/api/connection-details",
-      window.location.origin
-    );
+    // Final validation and enrichment
+    const finalConfig = {
+      ...config,
+      sessionKey: config.sessionKey.startsWith("agent:main:")
+        ? config.sessionKey
+        : `agent:main:${config.sessionKey || "bot"}`
+    };
 
-    const response = await fetch(url.toString(), {
+    console.log("🚀 Connecting with config:", finalConfig);
+    const response = await fetch("/api/connection-details", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(config),
+      body: JSON.stringify(finalConfig),
     });
 
     const connectionDetailsData: ConnectionDetails = await response.json();
@@ -295,7 +299,7 @@ function SessionConfigForm({
         <div className="bg-[#111111] border border-[#1f1f1f] rounded-2xl p-6 flex flex-col gap-5 shadow-2xl">
           {field("openclawUrl",  "OpenClaw URL",     <LinkIcon />,   "http://localhost:18789")}
           {field("gatewayToken", "Gateway Token",    <KeyIcon />,    "Enter your gateway token", "password")}
-          {field("sessionKey",   "Session Key",      <HashIcon2 />,  "agent:main:your-bot")}
+          {field("sessionKey",   "Session Key",      <HashIcon2 />,  "bot-name (prefix agent:main: added automatically)")}
 
           {/* Connect Button */}
           <button
