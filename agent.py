@@ -50,7 +50,8 @@ def chat_proxy():
         headers = {
             "Authorization": f"Bearer {gate_token}",
             "x-openclaw-session-key": sess_key,
-            "x-openclaw-agent-id": "main"
+            "x-openclaw-agent-id": "main",
+            "ngrok-skip-browser-warning": "true"
         }
 
         resp = requests.post(

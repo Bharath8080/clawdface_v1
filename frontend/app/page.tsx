@@ -25,9 +25,9 @@ import { getUser } from "@/lib/auth";
 
 // ─── Session Config Defaults ────────────────────────────────────────────────
 const DEFAULTS = {
-  openclawUrl:  "",
+  openclawUrl:  "https://pertinacious-speechlessly-lidia.ngrok-free.dev",
   gatewayToken: "",
-  sessionKey:   "",
+  sessionKey:   "agent:main:bot",
 };
 
 // ─── Icons ──────────────────────────────────────────────────────────────────
