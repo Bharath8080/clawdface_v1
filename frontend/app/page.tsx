@@ -489,13 +489,13 @@ function AvatarPickerModal({
                 }`}
               >
                 <div className="relative w-full aspect-video rounded-xl overflow-hidden border border-white/5 shadow-inner">
-                  <Image 
+                  <img 
                     src={avatar.image} 
                     alt={avatar.name} 
-                    fill 
-                    className={`object-cover transition-transform duration-500 ${
+                    className={`w-full h-full object-cover transition-transform duration-500 ${
                       tempId === avatar.id ? "scale-105" : "group-hover:scale-105"
                     }`} 
+                    loading="lazy"
                   />
                   
                   {/* Labels as in image overlay */}
@@ -577,11 +577,11 @@ function AvatarGallery() {
               className="group relative rounded-2xl transition-all duration-300 overflow-hidden border border-white/5 hover:border-white/10"
             >
               <div className="relative w-full aspect-video">
-                <Image 
+                <img 
                   src={avatar.image} 
                   alt={avatar.name} 
-                  fill 
-                  className="object-cover transition-transform duration-700 group-hover:scale-105" 
+                  className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" 
+                  loading="lazy"
                 />
                 
                 {/* Labels as in image overlay */}
