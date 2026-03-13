@@ -116,31 +116,40 @@ async def my_agent(ctx: agents.JobContext):
         print(f"[SESSION] ✗ Incomplete config: {config}")
         return
  
-    # 2. MEGA-TOKEN: Pack everything into the api_key for the proxy
+    # 2. Determine Voice ID based on Avatar Gender
+    # Male: Kevin, Jason, Sameer, Mike, Johnny, Aman, Alex, Amir, Akbar
+    # Female: Jessica, Cathy, Sofia, Lucy, Kiara, Jennifer, Priya, Chloe, Lisa, Allie, Misha
+    avatar_id = config.get("avatarId") or os.getenv("TRUGEN_AVATAR_ID")
+    if not avatar_id:
+        avatar_id = "1a640442" # Default to Lisa
+
+    male_ids = {
+        "182b03e8", "05a001fc", "be5b2ce0", "03ae0187", 
+        "1fa504ff", "0f160301", "13550375", "48d778c9", "18c4043e"
+    }
+    
+    # Female: FGY2WhTYpPnrIDTdsKH5, Male: CwhRBWXzGAHq8TQ4Fs17
+    voice_id = "CwhRBWXzGAHq8TQ4Fs17" if avatar_id in male_ids else "FGY2WhTYpPnrIDTdsKH5"
+    print(f"[SESSION] Using Avatar ID: {avatar_id}, Voice ID: {voice_id}")
+
+    # 3. MEGA-TOKEN: Pack everything into the api_key for the proxy
     mega_token = f"{url}|{token}|{key}"
- 
+
     openclaw_llm = openai.LLM(
         model="main",
         base_url="http://localhost:8080/v1",
         api_key=mega_token,
     )
- 
-    # 3. Simple AgentSession setup
+
+    # 4. Simple AgentSession setup
     session = AgentSession(
         stt="deepgram/nova-3",
         llm=openclaw_llm,
         tts=elevenlabs.TTS(
-            voice_id="FGY2WhTYpPnrIDTdsKH5",
+            voice_id=voice_id,
             model="eleven_flash_v2_5",
         ),
     )
- 
-    avatar_id = config.get("avatarId") or os.getenv("TRUGEN_AVATAR_ID")
-    if not avatar_id:
-        # Fallback only if absolutely no ID is provided, using Lisa as a safe system default
-        avatar_id = "1a640442"
-   
-    print(f"[SESSION] Using Avatar ID: {avatar_id}")
    
     trugen_avatar = trugen.AvatarSession(avatar_id=avatar_id)
     await trugen_avatar.start(session, room=ctx.room)
