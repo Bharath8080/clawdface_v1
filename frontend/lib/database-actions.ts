@@ -1,16 +1,7 @@
-import { createClient } from '@supabase/supabase-js';
-import { db, bots, conversations } from '../drizzle';
+"use server";
+
+import { db, bots, conversations, profiles } from '../drizzle';
 import { eq, desc } from 'drizzle-orm';
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-// Keep Supabase client for Auth if needed elsewhere, 
-// though we are moving data operations to Drizzle.
-export const supabase = createClient(
-  supabaseUrl || 'https://placeholder.supabase.co', 
-  supabaseAnonKey || 'placeholder'
-);
 
 export interface Bot {
   id: string;
@@ -37,7 +28,8 @@ export interface Conversation {
   created_at: string;
 }
 
-export async function fetchBots(userId: string): Promise<Bot[]> {
+// Bot Actions
+export async function fetchBotsAction(userId: string): Promise<Bot[]> {
   const data = await db
     .select()
     .from(bots)
@@ -57,7 +49,7 @@ export async function fetchBots(userId: string): Promise<Bot[]> {
   })) as Bot[];
 }
 
-export async function createBot(bot: Partial<Bot>) {
+export async function createBotAction(bot: Partial<Bot>) {
   const [data] = await db
     .insert(bots)
     .values({
@@ -78,8 +70,7 @@ export async function createBot(bot: Partial<Bot>) {
   };
 }
 
-export async function updateBot(id: string, updates: Partial<Bot>) {
-  // Filter out created_at and id from updates to avoid type mismatches
+export async function updateBotAction(id: string, updates: Partial<Bot>) {
   const { created_at, id: botId, ...filteredUpdates } = updates;
 
   const [data] = await db
@@ -87,7 +78,7 @@ export async function updateBot(id: string, updates: Partial<Bot>) {
     .set({ 
       ...filteredUpdates, 
       updated_at: new Date() 
-    } as any) // Use as any to bypass strict type check for now since filteredUpdates might contain nulls
+    } as any)
     .where(eq(bots.id, id))
     .returning();
     
@@ -98,13 +89,14 @@ export async function updateBot(id: string, updates: Partial<Bot>) {
   };
 }
 
-export async function deleteBot(id: string) {
+export async function deleteBotAction(id: string) {
   await db
     .delete(bots)
     .where(eq(bots.id, id));
 }
 
-export async function fetchConversations(email: string): Promise<Conversation[]> {
+// Conversation Actions
+export async function fetchConversationsAction(email: string): Promise<Conversation[]> {
   const data = await db
     .select()
     .from(conversations)
@@ -124,7 +116,7 @@ export async function fetchConversations(email: string): Promise<Conversation[]>
   })) as Conversation[];
 }
 
-export async function createConversation(conversation: Partial<Conversation>) {
+export async function createConversationAction(conversation: Partial<Conversation>) {
   const [data] = await db
     .insert(conversations)
     .values({
@@ -144,8 +136,42 @@ export async function createConversation(conversation: Partial<Conversation>) {
   };
 }
 
-export async function deleteConversation(id: string) {
+export async function deleteConversationAction(id: string) {
   await db
     .delete(conversations)
     .where(eq(conversations.id, id));
+}
+
+// User/Profile Actions
+export async function syncUserAction(email: string) {
+  const [data] = await db
+    .insert(profiles)
+    .values({ email })
+    .onConflictDoUpdate({
+      target: profiles.email,
+      set: { email } 
+    })
+    .returning();
+    
+  return {
+    ...data,
+    created_at: data.created_at?.toISOString(),
+  };
+}
+
+export async function getLastConfigAction(email: string) {
+  const [data] = await db
+    .select({ last_config: profiles.last_config })
+    .from(profiles)
+    .where(eq(profiles.email, email))
+    .limit(1);
+    
+  return data?.last_config;
+}
+
+export async function updateLastConfigAction(email: string, config: any) {
+  await db
+    .update(profiles)
+    .set({ last_config: config })
+    .where(eq(profiles.email, email));
 }

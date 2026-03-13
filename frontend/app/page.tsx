@@ -19,11 +19,21 @@ import { Room, RoomEvent } from "livekit-client";
 import { useCallback, useEffect, useState, useRef } from "react";
 import type { ConnectionDetails } from "./api/connection-details/route";
 import { useRouter } from "next/navigation";
-import { isAuthenticated } from "@/lib/auth";
+import { isAuthenticated, getUser, saveUserToLocalStorage } from "@/lib/auth";
 import { Sidebar } from "@/components/Sidebar";
 import Image from "next/image";
-import { getUser, updateLastConfig } from "@/lib/auth";
-import { fetchBots, createBot, updateBot, deleteBot, fetchConversations, Bot, supabase } from "@/lib/supabase";
+import { 
+  fetchBotsAction as fetchBots, 
+  createBotAction as createBot, 
+  updateBotAction as updateBot, 
+  deleteBotAction as deleteBot, 
+  fetchConversationsAction as fetchConversations,
+  createConversationAction,
+  updateLastConfigAction as updateLastConfig,
+  syncUserAction,
+  Bot 
+} from "@/lib/database-actions";
+import { supabase } from "@/lib/supabase-client";
 
 // ─── Session Config Defaults ────────────────────────────────────────────────
 const DEFAULTS = {
@@ -198,12 +208,8 @@ export default function Page() {
       const user = getUser();
       if (user?.email) {
         try {
-          // Sync profile
-          const { data: profile } = await supabase
-            .from('profiles')
-            .upsert({ email: user.email }, { onConflict: 'email' })
-            .select()
-            .single();
+          // Sync profile via Server Action
+          const profile = await syncUserAction(user.email);
             
           if (profile) {
             setProfileId(profile.id);
@@ -349,22 +355,17 @@ export default function Page() {
       if (filteredTranscript.length > 0 && user?.email) {
         try {
           const selectedAvatar = AVATARS.find(a => a.id === currentConfig.avatarId) || AVATARS[0];
-          console.log("💾 Persisting conversation to Supabase...");
+          console.log("💾 Persisting conversation to Supabase via Server Action...");
           
-          const { error, data } = await supabase.from('conversations').insert({
+          const data = await createConversationAction({
             user_email: user.email,
             bot_name: currentConfig.sessionKey || currentConfig.botName || selectedAvatar.name || "Unknown Session",
             bot_avatar: selectedAvatar.id,
             status: "Completed",
             duration: duration.toString(),
             transcript: filteredTranscript, // Normalized transcript
-            created_at: new Date().toISOString()
-          }).select();
+          });
 
-          if (error) {
-            console.error("❌ Supabase Insertion Failed:", error);
-            throw error;
-          }
           console.log("✅ Conversation saved successfully:", data);
           
           // Refresh the conversations list to show the new entry
