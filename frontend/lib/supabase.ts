@@ -29,6 +29,18 @@ export interface Bot {
   updated_at: string;
 }
 
+export interface Conversation {
+  id: string;
+  user_email: string;
+  bot_name: string;
+  bot_avatar: string;
+  agent_id: string;
+  status: string;
+  duration: string;
+  transcript: any[];
+  created_at: string;
+}
+
 export async function fetchBots(userId: string): Promise<Bot[]> {
   const { data, error } = await supabase
     .from('bots')
@@ -66,6 +78,37 @@ export async function updateBot(id: string, updates: Partial<Bot>) {
 export async function deleteBot(id: string) {
   const { error } = await supabase
     .from('bots')
+    .delete()
+    .eq('id', id);
+    
+  if (error) throw error;
+}
+
+export async function fetchConversations(email: string): Promise<Conversation[]> {
+  const { data, error } = await supabase
+    .from('conversations')
+    .select('*')
+    .eq('user_email', email)
+    .order('created_at', { ascending: false });
+    
+  if (error) throw error;
+  return data || [];
+}
+
+export async function createConversation(conversation: Partial<Conversation>) {
+  const { data, error } = await supabase
+    .from('conversations')
+    .insert(conversation)
+    .select()
+    .single();
+    
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteConversation(id: string) {
+  const { error } = await supabase
+    .from('conversations')
     .delete()
     .eq('id', id);
     

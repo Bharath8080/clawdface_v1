@@ -26,6 +26,8 @@ const CardIcon = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="non
 const SunIcon = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>;
 const SignOutIcon = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>;
 const UserIcon = () => <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>;
+const HistoryIcon = () => <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>;
+const MonitorIcon = () => <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>;
 
 function Tooltip({ label }: { label: string }) {
   return (
@@ -48,9 +50,12 @@ function NavRow({ label, icon, isActive, onClick }: NavItemProps) {
   );
 }
 
-function SubRow({ label, icon, badge, badgeCls }: { label: string; icon: React.ReactNode; badge?: string; badgeCls?: string }) {
+function SubRow({ label, icon, badge, badgeCls, onClick }: { label: string; icon: React.ReactNode; badge?: string; badgeCls?: string; onClick?: () => void }) {
   return (
-    <div className="flex items-center gap-3 pl-[42px] pr-3 py-[9px] text-[#9ca3af] hover:text-white hover:bg-[#1c1c1c] rounded-lg cursor-pointer transition-all duration-150">
+    <div 
+      onClick={onClick}
+      className="flex items-center gap-3 pl-[42px] pr-3 py-[9px] text-[#9ca3af] hover:text-white hover:bg-[#1c1c1c] rounded-lg cursor-pointer transition-all duration-150"
+    >
       <span className="shrink-0">{icon}</span>
       <span className="flex-1 text-[14px] font-medium">{label}</span>
       {badge && <span className={`text-[9px] font-bold uppercase px-2 py-0.5 rounded-full border ${badgeCls}`}>{badge}</span>}
@@ -131,6 +136,7 @@ export function Sidebar({
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [phoneOpen, setPhoneOpen] = useState(true);
   const [securityOpen, setSecurityOpen] = useState(true);
+  const [monitorOpen, setMonitorOpen] = useState(true);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -207,6 +213,17 @@ export function Sidebar({
           <SubRow label="Whitelist"    icon={<LockIcon />} badge="Paid" badgeCls="text-orange-400 border-orange-400/50 bg-orange-400/10" />
           <SubRow label="IO Screening" icon={<ScanIcon />} />
         </div>}
+
+        {/* Monitor */}
+        <button onClick={() => setMonitorOpen(!monitorOpen)}
+          className="w-full flex items-center gap-3 px-3 py-[11px] rounded-lg text-left text-[#9ca3af] hover:bg-[#1c1c1c] hover:text-white transition-all duration-150">
+          <span className="shrink-0"><MonitorIcon /></span>
+          <span className="flex-1 text-[15px] font-medium leading-none">Monitor</span>
+          <span className={`transition-transform duration-200 ${monitorOpen ? '' : '-rotate-90'}`}><ChevronDown /></span>
+        </button>
+        {monitorOpen && <div className="flex flex-col gap-0.5">
+          <SubRow label="Conversations" icon={<HistoryIcon />} onClick={() => handleNav("Conversations")} />
+        </div>}
       </nav>
 
       {/* Footer */}
@@ -261,6 +278,7 @@ export function Sidebar({
         <ColIconBtn label="Stock Avatars" icon={<UserIcon />}     isActive={activeSession === "Avatars"}   onClick={() => handleNav("Avatars")} />
         <ColIconBtn label="Phone"     icon={<PhoneIcon />}    isActive={activeSession === "Phone"}     onClick={() => handleNav("Phone")} />
         <ColIconBtn label="Security"  icon={<SecurityIcon />} isActive={activeSession === "Security"}  onClick={() => handleNav("Security")} />
+        <ColIconBtn label="Conversations" icon={<HistoryIcon />} isActive={activeSession === "Conversations"} onClick={() => handleNav("Conversations")} />
       </nav>
       <div className="flex flex-col items-center px-2 pb-4 shrink-0 gap-2">
         <div className="border-t border-[#232323] w-full mb-1" />

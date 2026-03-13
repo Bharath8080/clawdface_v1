@@ -3,6 +3,7 @@
 import { CloseIcon } from "@/components/CloseIcon";
 import { NoAgentNotification } from "@/components/NoAgentNotification";
 import TranscriptionView from "@/components/TranscriptionView";
+// @ts-ignore
 import {
   BarVisualizer,
   DisconnectButton,
@@ -10,20 +11,20 @@ import {
   VideoTrack,
   useVoiceAssistant,
   useRoomContext,
+  RoomContext,
+  TranscriptionReceivedEvent,
 } from "@livekit/components-react";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore
-import { RoomContext } from "@livekit/components-react";
+import useCombinedTranscriptions from "@/hooks/useCombinedTranscriptions";
 import { AnimatePresence, motion } from "framer-motion";
 import { Room, RoomEvent } from "livekit-client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import type { ConnectionDetails } from "./api/connection-details/route";
 import { useRouter } from "next/navigation";
 import { isAuthenticated } from "@/lib/auth";
 import { Sidebar } from "@/components/Sidebar";
 import Image from "next/image";
 import { getUser, updateLastConfig } from "@/lib/auth";
-import { fetchBots, createBot, deleteBot, Bot, supabase } from "@/lib/supabase";
+import { fetchBots, createBot, updateBot, deleteBot, fetchConversations, Bot, supabase } from "@/lib/supabase";
 
 // ─── Session Config Defaults ────────────────────────────────────────────────
 const DEFAULTS = {
@@ -31,6 +32,7 @@ const DEFAULTS = {
   gatewayToken: "",
   sessionKey:   "",
   avatarId:     "",
+  botName:      "",
 };
 
 // ─── Avatars ────────────────────────────────────────────────────────────────
@@ -94,6 +96,12 @@ const HashIcon2 = ({ size = 16 }: { size?: number }) => (
     <line x1="10" x2="8" y1="3" y2="21"/><line x1="16" x2="14" y1="3" y2="21"/>
   </svg>
 );
+const SettingsIcon = ({ size = 20, className = "" }: { size?: number, className?: string }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+    <circle cx="12" cy="12" r="3"/>
+  </svg>
+);
 const RefreshCwIcon = ({ size = 20, className = "" }: { size?: number, className?: string }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
     <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
@@ -153,6 +161,27 @@ export default function Page() {
   const [bots, setBots] = useState<Bot[]>([]);
   const [profileId, setProfileId] = useState<string | null>(null);
   const [isLoadingBots, setIsLoadingBots] = useState(false);
+  const [editingBotId, setEditingBotId] = useState<string | null>(null);
+
+  // Conversation tracking state
+  const [sessionTranscript, setSessionTranscript] = useState<any[]>([]);
+  const transcriptRef = useRef<any[]>([]);
+  const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
+  const startTimeRef = useRef<number | null>(null);
+  const [conversations, setConversations] = useState<any[]>([]);
+  const [isLoadingConversations, setIsLoadingConversations] = useState(false);
+  const [selectedConversation, setSelectedConversation] = useState<any | null>(null);
+  const finalSegmentIds = useRef<Set<string>>(new Set());
+  const segmentsMapRef = useRef<Map<string, any>>(new Map());
+  const configRef = useRef(config);
+  
+  // Sync ref with config state to ensure handleDisconnected sees latest values
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
+
+  // Robust Transcription Tracking via Hook
+  // (Moved to TranscriptSynchronizer component to stay within RoomContext)
 
   // Load config on mount
   useEffect(() => {
@@ -162,7 +191,7 @@ export default function Page() {
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
-          setConfig((prev) => ({ ...prev, ...parsed }));
+          setConfig({ ...DEFAULTS, ...parsed });
         } catch (e) {}
       }
 
@@ -187,7 +216,7 @@ export default function Page() {
             
             // Fetch last config if nothing in localStorage
             if (!saved && profile.last_config) {
-              setConfig((prev) => ({ ...prev, ...profile.last_config }));
+              setConfig({ ...DEFAULTS, ...profile.last_config });
               localStorage.setItem("openclaw_config", JSON.stringify(profile.last_config));
             }
           }
@@ -206,8 +235,38 @@ export default function Page() {
       setAuthChecked(true);
     }
   }, [router]);
+  
+  // Fetch conversations when switching to the Monitor section
+  useEffect(() => {
+    if (activeSession === "Conversations" && authChecked) {
+      const loadConversations = async () => {
+        setIsLoadingConversations(true);
+        try {
+          const user = getUser();
+          if (user?.email) {
+            const data = await fetchConversations(user.email);
+            setConversations(data);
+          }
+        } catch (err) {
+          console.error("Failed to fetch conversations:", err);
+        } finally {
+          setIsLoadingConversations(false);
+        }
+      };
+      loadConversations();
+    }
+  }, [activeSession, authChecked]);
 
   const onConnectButtonClicked = useCallback(async () => {
+    // HARD RESET: Clear all previous session data before starting a new one
+    console.log("🧹 Hard Reset: Clearing previous session data");
+    setSessionTranscript([]);
+    transcriptRef.current = [];
+    setSessionStartTime(null);
+    startTimeRef.current = null;
+    segmentsMapRef.current.clear();
+    finalSegmentIds.current.clear();
+
     // 1. Persist config to localStorage (Works on Vercel)
     localStorage.setItem("openclaw_config", JSON.stringify(config));
 
@@ -248,7 +307,107 @@ export default function Page() {
 
   useEffect(() => {
     room.on(RoomEvent.MediaDevicesError, onDeviceFailure);
-    return () => { room.off(RoomEvent.MediaDevicesError, onDeviceFailure); };
+    
+    // Manual Transcription tracking removed in favor of useCombinedTranscriptions hook
+
+    const handleConnected = () => {
+      console.log("🚀 Session Connected Logic Triggered");
+      const now = Date.now();
+      setSessionStartTime(now);
+      startTimeRef.current = now;
+      setSessionTranscript([]);
+      transcriptRef.current = [];
+      segmentsMapRef.current.clear();
+      finalSegmentIds.current.clear();
+    };
+
+    const handleDisconnected = async () => {
+      console.log("📡 handleDisconnected Logic Triggered");
+      const endTime = Date.now();
+      const startTime = startTimeRef.current;
+      const duration = startTime ? Math.round((endTime - startTime) / 1000) : 0;
+      
+      const currentTranscript = transcriptRef.current;
+      const user = getUser();
+      const currentConfig = configRef.current;
+      
+      console.log("📊 Session Summary:", {
+        transcriptCount: currentTranscript.length,
+        userEmail: user?.email,
+        duration: duration + "s"
+      });
+
+      // Filter for non-empty text and ensure we only save if there's meaningful interaction
+      const filteredTranscript = currentTranscript
+        .filter(s => s.text && s.text.trim().length > 0)
+        .map(s => ({
+          text: s.text,
+          isAgent: s.isAgent,
+          timestamp: s.timestamp,
+          participant: s.participant
+        }));
+
+      if (filteredTranscript.length > 0 && user?.email) {
+        try {
+          const selectedAvatar = AVATARS.find(a => a.id === currentConfig.avatarId) || AVATARS[0];
+          console.log("💾 Persisting conversation to Supabase...");
+          
+          const { error, data } = await supabase.from('conversations').insert({
+            user_email: user.email,
+            bot_name: currentConfig.sessionKey || currentConfig.botName || selectedAvatar.name || "Unknown Session",
+            bot_avatar: selectedAvatar.id,
+            status: "Completed",
+            duration: duration.toString(),
+            transcript: filteredTranscript, // Normalized transcript
+            created_at: new Date().toISOString()
+          }).select();
+
+          if (error) {
+            console.error("❌ Supabase Insertion Failed:", error);
+            throw error;
+          }
+          console.log("✅ Conversation saved successfully:", data);
+          
+          // Refresh the conversations list to show the new entry
+          console.log("🔄 Refreshing conversations list...");
+          const conversationsData = await fetchConversations(user.email);
+          setConversations(conversationsData);
+          
+        } catch (err) {
+          console.error("⛔ Critical Saving Exception:", err);
+        }
+      } else {
+        console.warn("⚠️ Saving Aborted:", { 
+          reason: filteredTranscript.length === 0 ? "Empty transcript" : "User not authenticated",
+          transcriptSize: filteredTranscript.length,
+          user: user?.email ? "Authenticated" : "Guest"
+        });
+      }
+      
+      // Cleanup for next session
+      setSessionStartTime(null);
+      startTimeRef.current = null;
+      segmentsMapRef.current.clear();
+      finalSegmentIds.current.clear();
+      setSessionStartTime(null);
+      startTimeRef.current = null;
+      segmentsMapRef.current.clear();
+      finalSegmentIds.current.clear();
+      
+      // Clear data immediately to prevent leakage if user reconnects quickly
+      setSessionTranscript([]);
+      transcriptRef.current = [];
+    };
+
+    room.on(RoomEvent.Connected, handleConnected);
+    room.on(RoomEvent.Disconnected, handleDisconnected);
+
+    return () => {
+      console.log("🧹 Cleaning up Room listeners");
+      room.off(RoomEvent.MediaDevicesError, onDeviceFailure);
+      room.off(RoomEvent.Connected, handleConnected);
+      room.off(RoomEvent.Disconnected, handleDisconnected);
+    };
   }, [room]);
 
   if (!authChecked) {
@@ -266,22 +425,40 @@ export default function Page() {
     if (!profileId) return;
     setIsLoadingBots(true);
     try {
-      const selectedAvatar = AVATARS.find(a => a.id === config.avatarId);
-      await createBot({
-        user_id: profileId,
-        name: selectedAvatar ? `${selectedAvatar.name}'s Bot` : "My New Bot",
-        avatar_id: config.avatarId,
-        openclaw_url: config.openclawUrl,
-        gateway_token: config.gatewayToken,
-        session_key: config.sessionKey,
-        voice_id: "default",
-      });
+      if (editingBotId) {
+        // Update existing bot
+        const { error } = await supabase
+          .from('bots')
+          .update({
+            avatar_id: config.avatarId,
+            openclaw_url: config.openclawUrl,
+            gateway_token: config.gatewayToken,
+            session_key: config.sessionKey,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', editingBotId);
+          
+        if (error) throw error;
+        setEditingBotId(null);
+      } else {
+        // Create new bot
+        const selectedAvatar = AVATARS.find(a => a.id === config.avatarId);
+        await createBot({
+          user_id: profileId,
+          name: selectedAvatar ? `${selectedAvatar.name}'s Bot` : "My New Bot",
+          avatar_id: config.avatarId,
+          openclaw_url: config.openclawUrl,
+          gateway_token: config.gatewayToken,
+          session_key: config.sessionKey,
+          voice_id: "default",
+        });
+      }
       // Refresh bots list
       const userBots = await fetchBots(profileId);
       setBots(userBots);
       setActiveSession("Library");
-    } catch (err) {
-      console.error("Failed to save bot:", err);
+    } catch (err: any) {
+      console.error("Failed to save/update bot:", err.message || err);
     } finally {
       setIsLoadingBots(false);
     }
@@ -315,6 +492,7 @@ export default function Page() {
         <div className="flex-1 overflow-hidden relative">
           {/* @ts-ignore */}
           <RoomContext.Provider value={room}>
+            <TranscriptSynchronizer transcriptRef={transcriptRef} startTimeRef={startTimeRef} />
             {activeSession === "My Bot" ? (
               <SimpleVoiceAssistant
                 onConnectButtonClicked={onConnectButtonClicked}
@@ -323,6 +501,11 @@ export default function Page() {
                 onOpenPicker={() => setIsAvatarPickerOpen(true)}
                 onSaveAsBot={handleSaveBot}
                 isSavingBot={isLoadingBots}
+                isEditing={!!editingBotId}
+                onCancelEdit={() => {
+                  setEditingBotId(null);
+                  setConfig(DEFAULTS);
+                }}
               />
             ) : activeSession === "Avatars" ? (
               <AvatarGallery />
@@ -344,12 +527,37 @@ export default function Page() {
                     gatewayToken: bot.gateway_token,
                     sessionKey: bot.session_key,
                     avatarId: bot.avatar_id,
+                    botName: bot.name,
                   };
                   setConfig(newConfig);
                   localStorage.setItem("openclaw_config", JSON.stringify(newConfig));
                   setActiveSession("My Bot");
                 }}
+                onEditBot={(bot) => {
+                  setEditingBotId(bot.id);
+                  setConfig({
+                    openclawUrl: bot.openclaw_url,
+                    gatewayToken: bot.gateway_token,
+                    sessionKey: bot.session_key,
+                    avatarId: bot.avatar_id,
+                    botName: bot.name,
+                  });
+                  setActiveSession("My Bot");
+                }}
               />
+            ) : activeSession === "Conversations" ? (
+              selectedConversation ? (
+                <ConversationDetailView 
+                  conversation={selectedConversation} 
+                  onBack={() => setSelectedConversation(null)} 
+                />
+              ) : (
+                <ConversationsListView
+                  isLoading={isLoadingConversations}
+                  conversations={conversations}
+                  onSelect={(conv) => setSelectedConversation(conv)}
+                />
+              )
             ) : (
               <div className="flex flex-col items-center justify-center h-full text-neutral-400 bg-[#050505] p-6">
                 <div className="text-center space-y-4 max-w-md p-8 border border-white/5 rounded-2xl bg-[#0A0A0A] shadow-2xl relative overflow-hidden">
@@ -379,7 +587,16 @@ export default function Page() {
         isOpen={isAvatarPickerOpen}
         onClose={() => setIsAvatarPickerOpen(false)}
         currentId={config.avatarId}
-        onSelect={(id) => setConfig({ ...config, avatarId: id })}
+        onSelect={(id) => {
+          const avatar = AVATARS.find(a => a.id === id);
+          setConfig({ 
+            ...config, 
+            avatarId: id,
+            botName: (!config.botName || config.botName === "Bot" || config.botName === "My Bot") 
+              ? (avatar?.name || "") 
+              : config.botName
+          });
+        }}
       />
     </main>
   );
@@ -394,6 +611,8 @@ function SessionConfigForm({
   onOpenPicker,
   onSaveAsBot,
   isSavingBot,
+  isEditing,
+  onCancelEdit,
 }: {
   config: typeof DEFAULTS;
   setConfig: (c: typeof DEFAULTS) => void;
@@ -402,6 +621,8 @@ function SessionConfigForm({
   onOpenPicker: () => void;
   onSaveAsBot?: () => void;
   isSavingBot?: boolean;
+  isEditing?: boolean;
+  onCancelEdit?: () => void;
 }) {
   const [showToken, setShowToken] = useState(false);
   const selectedAvatar = AVATARS.find(a => a.id === config.avatarId);
@@ -471,8 +692,12 @@ function SessionConfigForm({
           <div className="w-14 h-14 rounded-2xl bg-[#1c2e28] flex items-center justify-center mx-auto mb-4 shadow-[0_0_32px_rgba(0,227,170,0.12)]">
             <Image src="/openclaw.png" alt="ClawdFace" width={34} height={34} className="object-contain" />
           </div>
-          <h2 className="text-[22px] font-bold text-white tracking-tight">Configure Session</h2>
-          <p className="text-[#6b7280] text-[13px] mt-1">Connect to your OpenClaw backend to start the conversation</p>
+          <h2 className="text-[22px] font-bold text-white tracking-tight">
+            {isEditing ? "Edit Bot Configuration" : "Configure Session"}
+          </h2>
+          <p className="text-[#6b7280] text-[13px] mt-1">
+            {isEditing ? "Update your bot settings below" : "Connect to your OpenClaw backend to start the conversation"}
+          </p>
         </div>
 
         <div className="bg-[#111111] border border-[#1f1f1f] rounded-2xl p-6 flex flex-col gap-5 shadow-2xl">
@@ -558,8 +783,16 @@ function SessionConfigForm({
                   <path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>
                 </svg>
               )}
-              Save as new Bot
+              {isEditing ? "Update Bot" : "Save as new Bot"}
             </button>
+            {isEditing && (
+              <button
+                onClick={onCancelEdit}
+                className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-500 font-semibold rounded-xl transition-all border border-red-500/10 text-[14px]"
+              >
+                Cancel Edit
+              </button>
+            )}
           </div>
         </div>
 
@@ -671,6 +904,37 @@ function AvatarGallery() {
   );
 }
 
+// ─── Transcript Synchronizer ─────────────────────────────────────────────────
+function TranscriptSynchronizer({ 
+  transcriptRef,
+  startTimeRef
+}: { 
+  transcriptRef: React.MutableRefObject<any[]>,
+  startTimeRef: React.MutableRefObject<number | null>
+}) {
+  const combinedTranscriptions = useCombinedTranscriptions();
+  
+  useEffect(() => {
+    if (combinedTranscriptions.length > 0) {
+      const startTime = startTimeRef.current || 0;
+      
+      // Only include segments that started AFTER the session began
+      const filtered = combinedTranscriptions.filter(s => s.firstReceivedTime >= startTime);
+
+      if (filtered.length > 0) {
+        transcriptRef.current = filtered.map(s => ({
+          text: s.text,
+          isAgent: s.role === "assistant",
+          timestamp: new Date(s.firstReceivedTime).toISOString(),
+          participant: s.role === "assistant" ? "Agent" : "User"
+        }));
+      }
+    }
+  }, [combinedTranscriptions]);
+  
+  return null;
+}
+
 // ─── Voice Assistant (manages disconnected/connected states) ─────────────────
 function SimpleVoiceAssistant({
   onConnectButtonClicked,
@@ -679,6 +943,8 @@ function SimpleVoiceAssistant({
   onOpenPicker,
   onSaveAsBot,
   isSavingBot,
+  isEditing,
+  onCancelEdit,
 }: {
   onConnectButtonClicked: () => void;
   config: typeof DEFAULTS;
@@ -686,6 +952,8 @@ function SimpleVoiceAssistant({
   onOpenPicker: () => void;
   onSaveAsBot?: () => void;
   isSavingBot?: boolean;
+  isEditing?: boolean;
+  onCancelEdit?: () => void;
 }) {
   const { state: agentState } = useVoiceAssistant();
   const [isChatVisible, setIsChatVisible] = useState(false);
@@ -734,6 +1002,8 @@ function SimpleVoiceAssistant({
             onOpenPicker={onOpenPicker}
             onSaveAsBot={onSaveAsBot}
             isSavingBot={isSavingBot}
+            isEditing={isEditing}
+            onCancelEdit={onCancelEdit}
           />
         ) : (
           <motion.div key="connected" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex h-full w-full">
@@ -822,12 +1092,14 @@ function BotLibraryView({
   bots, 
   profileId, 
   onRefresh, 
-  onSelectBot 
+  onSelectBot,
+  onEditBot
 }: { 
   bots: Bot[], 
   profileId: string | null,
   onRefresh: () => void,
-  onSelectBot: (bot: Bot) => void
+  onSelectBot: (bot: Bot) => void,
+  onEditBot: (bot: Bot) => void
 }) {
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const handleDelete = async (id: string, e: React.MouseEvent) => {
@@ -873,6 +1145,13 @@ function BotLibraryView({
                     {avatar ? <img src={avatar.image} alt={bot.name} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105 opacity-60 group-hover:opacity-80" /> : <div className="w-full h-full flex items-center justify-center text-[#242424]"><UserIcon size={48} /></div>}
                     <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/40 to-transparent" />
                     <div className="absolute top-3 right-3 flex gap-2">
+                       <button 
+                        onClick={(e) => { e.stopPropagation(); onEditBot(bot); }} 
+                        className="p-2 rounded-lg bg-black/50 backdrop-blur-md border border-white/10 text-white/40 hover:text-[#00E3AA] hover:bg-[#00E3AA]/10 transition-all z-20"
+                        title="Edit Bot"
+                      >
+                        <SettingsIcon size={14} />
+                      </button>
                        <button onClick={(e) => handleDelete(bot.id, e)} className="p-2 rounded-lg bg-black/50 backdrop-blur-md border border-white/10 text-white/40 hover:text-red-400 hover:bg-red-500/10 transition-all z-20">
                         {isDeleting === bot.id ? <RefreshCwIcon size={14} className="animate-spin" /> : <TrashIcon size={14} />}
                       </button>
@@ -897,6 +1176,143 @@ function BotLibraryView({
             })}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Conversations List View ────────────────────────────────────────────────
+function ConversationsListView({
+  isLoading,
+  conversations,
+  onSelect
+}: {
+  isLoading: boolean;
+  conversations: any[];
+  onSelect: (conv: any) => void;
+}) {
+  return (
+    <div className="absolute inset-0 overflow-y-auto p-6 md:p-10 custom-scrollbar bg-[#050505] z-10">
+      <div className="max-w-6xl mx-auto pb-20">
+        <header className="mb-10">
+          <h1 className="text-3xl font-bold text-white tracking-tight flex items-center gap-3">
+            <RefreshCwIcon size={32} className="text-[#00E3AA]" />
+            Conversations
+          </h1>
+          <p className="text-[#6b7280] mt-2 text-sm">Review past interactions and transcripts</p>
+        </header>
+
+        {isLoading ? (
+          <div className="flex items-center justify-center py-20">
+            <RefreshCwIcon className="animate-spin text-[#00E3AA]" size={32} />
+          </div>
+        ) : conversations.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 border-2 border-dashed border-white/5 rounded-3xl bg-white/[0.02]">
+            <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center text-[#4b5563] mb-4"><MessageIcon size={32} /></div>
+            <h3 className="text-lg font-semibold text-white">No Conversations Found</h3>
+            <p className="text-[#6b7280] text-[13px] mt-1 max-w-xs text-center">Your interaction history will appear here after your first call.</p>
+          </div>
+        ) : (
+          <div className="bg-[#0d0d0d] border border-white/5 rounded-2xl overflow-hidden">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-white/5 bg-white/5">
+                  <th className="px-6 py-4 text-[12px] font-bold uppercase tracking-wider text-[#6b7280]">Status</th>
+                  <th className="px-6 py-4 text-[12px] font-bold uppercase tracking-wider text-[#6b7280]">Bot Detail</th>
+                  <th className="px-6 py-4 text-[12px] font-bold uppercase tracking-wider text-[#6b7280]">Platform</th>
+                  <th className="px-6 py-4 text-[12px] font-bold uppercase tracking-wider text-[#6b7280]">Date/Time</th>
+                  <th className="px-6 py-4 text-[12px] font-bold uppercase tracking-wider text-[#6b7280]">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {conversations.map((conv) => (
+                  <tr key={conv.id} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors cursor-pointer group" onClick={() => onSelect(conv)}>
+                    <td className="px-6 py-4">
+                      <span className="px-2 py-1 rounded-full bg-green-500/10 text-green-500 text-[10px] font-bold uppercase border border-green-500/20">{conv.status || "Ended"}</span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg overflow-hidden bg-white/10 flex flex-shrink-0 items-center justify-center text-[#9ca3af]">
+                          {(() => {
+                            // Try to find by ID, fallback to finding by Name, finally fallback to index 0
+                            const avatar = AVATARS.find(a => a.id === conv.bot_avatar) 
+                                        || AVATARS.find(a => a.name === conv.bot_name)
+                                        || AVATARS[0];
+                            return <img src={avatar.image} className="w-full h-full object-cover" alt={avatar.name} />;
+                          })()}
+                        </div>
+                        <div className="flex flex-col min-w-0">
+                          <span className="text-[#00E3AA] text-[10px] font-bold uppercase tracking-widest mb-0.5 opacity-80">Session Key</span>
+                          <span className="text-white text-[14px] font-bold truncate leading-tight">
+                            {conv.bot_name || "Unknown"}
+                          </span>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className="text-[#9ca3af] text-[13px]">LiveKit</span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex flex-col">
+                        <span className="text-white text-[13px]">{new Date(conv.created_at).toLocaleDateString()}</span>
+                        <span className="text-[#3a3a3a] text-[11px]">{new Date(conv.created_at).toLocaleTimeString()}</span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                       <button className="px-4 py-1.5 rounded-lg bg-white/5 hover:bg-[#00E3AA]/20 hover:text-[#00E3AA] transition-all text-[12px] font-semibold text-white/70">View History</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Conversation Detail View ───────────────────────────────────────────────
+function ConversationDetailView({
+  conversation,
+  onBack
+}: {
+  conversation: any;
+  onBack: () => void;
+}) {
+  return (
+    <div className="absolute inset-0 overflow-y-auto p-6 md:p-10 custom-scrollbar bg-[#050505] z-10">
+      <div className="max-w-4xl mx-auto pb-20">
+        <header className="mb-10 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <button onClick={onBack} className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/70 transition-all border border-white/5">
+              <ChevronDownIcon className="rotate-90" />
+            </button>
+            <div>
+              <h1 className="text-2xl font-bold text-white tracking-tight">Conversation with {conversation.bot_name}</h1>
+              <p className="text-[#6b7280] text-sm mt-1">{new Date(conversation.created_at).toLocaleString()} • {conversation.duration}s</p>
+            </div>
+          </div>
+          <span className="px-3 py-1 rounded-full bg-green-500/10 text-green-500 text-[12px] font-bold uppercase border border-green-500/20">Saved</span>
+        </header>
+
+        <div className="space-y-6">
+          {Array.isArray(conversation.transcript) && conversation.transcript.length > 0 ? (
+            conversation.transcript.map((msg: any, idx: number) => (
+              <div key={idx} className={`flex ${msg.isAgent ? 'justify-start' : 'justify-end'}`}>
+                <div className={`max-w-[80%] rounded-2xl p-4 ${msg.isAgent ? 'bg-white/5 border border-white/10 text-white' : 'bg-[#00E3AA]/10 border border-[#00E3AA]/20 text-white'}`}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider opacity-50">{msg.isAgent ? 'Agent' : 'User'}</span>
+                    <span className="text-[10px] opacity-30">{new Date(msg.timestamp).toLocaleTimeString()}</span>
+                  </div>
+                  <p className="text-[15px] leading-relaxed">{msg.text}</p>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="text-center py-20 text-neutral-500">No transcript available for this session.</div>
+          )}
+        </div>
       </div>
     </div>
   );

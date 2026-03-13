@@ -7,7 +7,7 @@ from flask import Flask, request, Response
 from dotenv import load_dotenv
 from livekit import agents
 from livekit.agents import Agent, AgentServer, AgentSession
-from livekit.plugins import elevenlabs, openai, trugen
+from livekit.plugins import elevenlabs, openai, trugen, groq, silero
 
 load_dotenv()
 
@@ -127,7 +127,11 @@ async def my_agent(ctx: agents.JobContext):
 
     # 3. Simple AgentSession setup
     session = AgentSession(
-        stt="deepgram/nova-3",
+        stt=groq.STT(
+            model="whisper-large-v3-turbo",
+            language="en",
+        ),
+        vad=silero.VAD.load(),
         llm=openclaw_llm,
         tts=elevenlabs.TTS(
             voice_id="FGY2WhTYpPnrIDTdsKH5",
@@ -153,5 +157,6 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "download-files":
         # This is used by the Dockerfile to pre-download models (e.g. Silero)
         print("Pre-downloading models...")
+        silero.VAD.load()
         sys.exit(0)
     agents.cli.run_app(server)
