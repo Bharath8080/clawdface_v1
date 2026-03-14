@@ -15,7 +15,7 @@ import {
 } from "@livekit/components-react";
 import useCombinedTranscriptions from "@/hooks/useCombinedTranscriptions";
 import { AnimatePresence, motion } from "framer-motion";
-import { Room, RoomEvent } from "livekit-client";
+import { Room, RoomEvent, DisconnectReason } from "livekit-client";
 import { useCallback, useEffect, useState, useRef } from "react";
 import type { ConnectionDetails } from "./api/connection-details/route";
 import { useRouter } from "next/navigation";
@@ -160,7 +160,7 @@ const CrossIcon = ({ size = 24 }: { size?: number }) => (
 export default function Page() {
   const router = useRouter();
   const [room] = useState(new Room());
-  const [activeSession, setActiveSession] = useState("My Bot");
+  const [activeSession, setActiveSession] = useState("Library");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isAvatarPickerOpen, setIsAvatarPickerOpen] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
@@ -183,11 +183,16 @@ export default function Page() {
   const finalSegmentIds = useRef<Set<string>>(new Set());
   const segmentsMapRef = useRef<Map<string, any>>(new Map());
   const configRef = useRef(config);
+  const activeSessionRef = useRef(activeSession);
   
-  // Sync ref with config state to ensure handleDisconnected sees latest values
+  // Sync refs with state to ensure handleDisconnected sees latest values
   useEffect(() => {
     configRef.current = config;
   }, [config]);
+
+  useEffect(() => {
+    activeSessionRef.current = activeSession;
+  }, [activeSession]);
 
   // Robust Transcription Tracking via Hook
   // (Moved to TranscriptSynchronizer component to stay within RoomContext)
@@ -262,7 +267,22 @@ export default function Page() {
     }
   }, [activeSession, authChecked]);
 
-  const onConnectButtonClicked = useCallback(async () => {
+  const generateSessionId = (prefix: string) => {
+    // Generate a fixed-length timestamp for consistency (e.g., 20260314203015)
+    const now = new Date();
+    const timestamp = now.getFullYear().toString() +
+      (now.getMonth() + 1).toString().padStart(2, '0') +
+      now.getDate().toString().padStart(2, '0') +
+      now.getHours().toString().padStart(2, '0') +
+      now.getMinutes().toString().padStart(2, '0') +
+      now.getSeconds().toString().padStart(2, '0');
+    
+    // Sanitize: allow alphanumeric and hyphens, lowercase
+    const cleanPrefix = prefix.toLowerCase().replace(/[^a-z0-9-]/g, '') || "bot";
+    return `${cleanPrefix}-${timestamp}`;
+  };
+
+  const onConnectButtonClicked = useCallback(async (forcedSessionKey?: string, forcedConfig?: typeof DEFAULTS) => {
     // HARD RESET: Clear all previous session data before starting a new one
     console.log("🧹 Hard Reset: Clearing previous session data");
     setSessionTranscript([]);
@@ -272,18 +292,20 @@ export default function Page() {
     segmentsMapRef.current.clear();
     finalSegmentIds.current.clear();
 
+    const activeConfig = forcedConfig || config;
+
     // 1. Persist config to localStorage (Works on Vercel)
-    localStorage.setItem("openclaw_config", JSON.stringify(config));
+    localStorage.setItem("openclaw_config", JSON.stringify(activeConfig));
 
     // 2. Sync to Supabase & local files
     const user = getUser();
     if (user?.email) {
-      await updateLastConfig(user.email, config);
+      await updateLastConfig(user.email, activeConfig);
       try {
         await fetch("/api/user-config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: user.email, config }),
+          body: JSON.stringify({ email: user.email, config: activeConfig }),
         });
       } catch (err) {
         console.warn("Local sync skipped (expected on production)");
@@ -291,12 +313,27 @@ export default function Page() {
     }
 
     // Final validation and enrichment
+    // Check if the session key is already timestamped (ends with 14 digits)
+    let sessionKeyToUse = forcedSessionKey || activeConfig.sessionKey;
+    
+    if (!sessionKeyToUse || !/-\d{14}$/.test(sessionKeyToUse)) {
+      const baseName = sessionKeyToUse || activeConfig.botName || "bot";
+      sessionKeyToUse = generateSessionId(baseName);
+    }
+
+    const finalSessionKey = sessionKeyToUse.startsWith("agent:main:")
+      ? sessionKeyToUse
+      : `agent:main:${sessionKeyToUse}`;
+
     const finalConfig = {
-      ...config,
-      sessionKey: config.sessionKey.startsWith("agent:main:")
-        ? config.sessionKey
-        : `agent:main:${config.sessionKey || "bot"}`
+      ...activeConfig,
+      avatarId: activeConfig.avatarId || AVATARS[0].id,
+      sessionKey: finalSessionKey,
+      botName: activeConfig.botName || (AVATARS.find(a => a.id === activeConfig.avatarId)?.name) || "Bot"
     };
+
+    // Update config state to ensure save logic has correct session key
+    setConfig(finalConfig);
 
     console.log("🚀 Connecting with config:", finalConfig);
     const response = await fetch("/api/connection-details", {
@@ -306,7 +343,11 @@ export default function Page() {
     });
 
     const connectionDetailsData: ConnectionDetails = await response.json();
-    await room.connect(connectionDetailsData.serverUrl, connectionDetailsData.participantToken);
+    await room.connect(connectionDetailsData.serverUrl, connectionDetailsData.participantToken, {
+      // @ts-ignore
+      signalTimeout: 30000, 
+      connectTimeout: 30000,
+    });
     await room.localParticipant.setMicrophoneEnabled(true);
   }, [room, config]);
 
@@ -326,8 +367,8 @@ export default function Page() {
       finalSegmentIds.current.clear();
     };
 
-    const handleDisconnected = async () => {
-      console.log("📡 handleDisconnected Logic Triggered");
+    const handleDisconnected = async (reason?: DisconnectReason) => {
+      console.log("📡 handleDisconnected Logic Triggered, Reason:", reason);
       const endTime = Date.now();
       const startTime = startTimeRef.current;
       const duration = startTime ? Math.round((endTime - startTime) / 1000) : 0;
@@ -335,11 +376,26 @@ export default function Page() {
       const currentTranscript = transcriptRef.current;
       const user = getUser();
       const currentConfig = configRef.current;
+      const currentSessionType = activeSessionRef.current;
       
+      // Determine session status based on disconnect reason
+      let status = "Completed";
+      if (reason && reason !== DisconnectReason.CLIENT_INITIATED) {
+        if ([DisconnectReason.SERVER_SHUTDOWN, DisconnectReason.PARTICIPANT_REMOVED, DisconnectReason.ROOM_DELETED].includes(reason)) {
+          status = "Terminated";
+        } else if ([DisconnectReason.STATE_MISMATCH, DisconnectReason.JOIN_FAILURE].includes(reason)) {
+          status = "Failed";
+        } else {
+          status = "Interrupted";
+        }
+      }
+
       console.log("📊 Session Summary:", {
         transcriptCount: currentTranscript.length,
         userEmail: user?.email,
-        duration: duration + "s"
+        duration: duration + "s",
+        sessionType: currentSessionType,
+        status
       });
 
       // Filter for non-empty text and ensure we only save if there's meaningful interaction
@@ -357,31 +413,32 @@ export default function Page() {
           const selectedAvatar = AVATARS.find(a => a.id === currentConfig.avatarId) || AVATARS[0];
           console.log("💾 Persisting conversation to Supabase via Server Action...");
           
+          // Use sessionKey as bot_name for history but strip the internal agent:main: prefix
+          const cleanHistoryName = currentConfig.sessionKey.replace(/^agent:main:/, "");
           const data = await createConversationAction({
             user_email: user.email,
-            bot_name: currentConfig.sessionKey || currentConfig.botName || selectedAvatar.name || "Unknown Session",
+            bot_name: cleanHistoryName || currentConfig.botName || selectedAvatar.name || "Unknown Session",
             bot_avatar: selectedAvatar.id,
-            status: "Completed",
+            status: status, // Dynamic status
             duration: duration.toString(),
-            transcript: filteredTranscript, // Normalized transcript
+            transcript: filteredTranscript, 
           });
 
           console.log("✅ Conversation saved successfully:", data);
           
-          // Refresh the conversations list to show the new entry
-          console.log("🔄 Refreshing conversations list...");
+          // Refresh the conversations list
           const conversationsData = await fetchConversations(user.email);
           setConversations(conversationsData);
           
         } catch (err) {
           console.error("⛔ Critical Saving Exception:", err);
         }
-      } else {
-        console.warn("⚠️ Saving Aborted:", { 
-          reason: filteredTranscript.length === 0 ? "Empty transcript" : "User not authenticated",
-          transcriptSize: filteredTranscript.length,
-          user: user?.email ? "Authenticated" : "Guest"
-        });
+      }
+
+      // REDIRECTION: If this was a Direct Call, go back to the library automatically
+      if (currentSessionType === "DirectCall") {
+        console.log("↩️ Direct Call ended, returning to Library");
+        setActiveSession("Library");
       }
       
       // Cleanup for next session
@@ -389,12 +446,6 @@ export default function Page() {
       startTimeRef.current = null;
       segmentsMapRef.current.clear();
       finalSegmentIds.current.clear();
-      setSessionStartTime(null);
-      startTimeRef.current = null;
-      segmentsMapRef.current.clear();
-      finalSegmentIds.current.clear();
-      
-      // Clear data immediately to prevent leakage if user reconnects quickly
       setSessionTranscript([]);
       transcriptRef.current = [];
     };
@@ -492,6 +543,7 @@ export default function Page() {
         <div className="flex-1 overflow-hidden relative">
           {/* @ts-ignore */}
           <RoomContext.Provider value={room}>
+            <RoomAudioRenderer />
             <TranscriptSynchronizer transcriptRef={transcriptRef} startTimeRef={startTimeRef} />
             {activeSession === "My Bot" ? (
               <SimpleVoiceAssistant
@@ -506,6 +558,16 @@ export default function Page() {
                   setEditingBotId(null);
                   setConfig(DEFAULTS);
                 }}
+              />
+            ) : activeSession === "DirectCall" ? (
+              <DirectCallDashboard
+                config={config}
+                autoStart={true}
+                onStartCall={() => {
+                  const autoId = generateSessionId(config.sessionKey || config.botName || "bot");
+                  onConnectButtonClicked(autoId);
+                }}
+                onBack={() => setActiveSession("Library")}
               />
             ) : activeSession === "Avatars" ? (
               <AvatarGallery />
@@ -529,9 +591,10 @@ export default function Page() {
                     avatarId: bot.avatar_id,
                     botName: bot.name,
                   };
-                  setConfig(newConfig);
-                  localStorage.setItem("openclaw_config", JSON.stringify(newConfig));
-                  setActiveSession("My Bot");
+                  setConfig(newConfig); // ensure state is updated for dashboard
+                  const autoId = generateSessionId(bot.session_key || bot.name || "bot");
+                  onConnectButtonClicked(autoId, newConfig);
+                  setActiveSession("DirectCall");
                 }}
                 onEditBot={(bot) => {
                   setEditingBotId(bot.id);
@@ -935,6 +998,70 @@ function TranscriptSynchronizer({
   return null;
 }
 
+// ─── Active Voice Assistant View ─────────────────────────────────────────────
+function ActiveVoiceAssistantView({ onConnectButtonClicked }: { onConnectButtonClicked: () => void }) {
+  const { state: agentState } = useVoiceAssistant();
+  const [isChatVisible, setIsChatVisible] = useState(false);
+  const [chatWidth, setChatWidth] = useState(450);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const MIN_WIDTH = 300;
+  const MAX_WIDTH = 800;
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const newWidth = document.documentElement.clientWidth - moveEvent.clientX;
+      setChatWidth(Math.min(Math.max(newWidth, MIN_WIDTH), MAX_WIDTH));
+    };
+    const handlePointerUp = () => {
+      setIsDragging(false);
+      document.removeEventListener("pointermove", handlePointerMove);
+      document.removeEventListener("pointerup", handlePointerUp);
+    };
+    document.addEventListener("pointermove", handlePointerMove);
+    document.addEventListener("pointerup", handlePointerUp);
+  };
+
+  if (agentState === "disconnected") return null;
+
+  const isAgentInteractive = ["listening", "thinking", "speaking", "idle"].includes(agentState);
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }} 
+      animate={{ opacity: 1 }} 
+      exit={{ opacity: 0 }} 
+      className="absolute inset-0 flex h-full w-full bg-[#050505] overflow-hidden z-20"
+    >
+      <main className="flex-1 h-full flex flex-col relative bg-[#000000]">
+        <div className="flex-1 flex items-center justify-center p-12">
+          {/* Only render visualizer when truly interactive, to prevent premature waving */}
+          {isAgentInteractive && <AgentVisualizer />}
+        </div>
+        <div className="absolute bottom-12 left-0 right-0 flex justify-center">
+          <ControlBar onConnectButtonClicked={onConnectButtonClicked} isChatVisible={isChatVisible} setIsChatVisible={setIsChatVisible} />
+        </div>
+      </main>
+      <motion.aside
+        initial={false}
+        animate={{ width: isChatVisible ? chatWidth : 0, opacity: isChatVisible ? 1 : 0 }}
+        transition={{ duration: isDragging ? 0 : 0.3, ease: "easeInOut" }}
+        className="relative min-w-0 h-full border-l border-white/5 bg-black/10 backdrop-blur-md overflow-hidden flex-shrink-0"
+      >
+        {isChatVisible && (
+          <div onPointerDown={handlePointerDown} className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-10 hover:bg-white/10 active:bg-white/20 transition-colors" />
+        )}
+        <div style={{ width: chatWidth }} className="h-full">
+          <TranscriptionView />
+        </div>
+      </motion.aside>
+      <NoAgentNotification state={agentState} />
+    </motion.div>
+  );
+}
+
 // ─── Voice Assistant (manages disconnected/connected states) ─────────────────
 function SimpleVoiceAssistant({
   onConnectButtonClicked,
@@ -956,13 +1083,7 @@ function SimpleVoiceAssistant({
   onCancelEdit?: () => void;
 }) {
   const { state: agentState } = useVoiceAssistant();
-  const [isChatVisible, setIsChatVisible] = useState(false);
-  const [chatWidth, setChatWidth] = useState(450);
-  const [isDragging, setIsDragging] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
-
-  const MIN_WIDTH = 300;
-  const MAX_WIDTH = 800;
 
   const handleConnect = async () => {
     setIsConnecting(true);
@@ -973,26 +1094,10 @@ function SimpleVoiceAssistant({
     }
   };
 
-  const handlePointerDown = (e: React.PointerEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-    const handlePointerMove = (moveEvent: PointerEvent) => {
-      const newWidth = document.documentElement.clientWidth - moveEvent.clientX;
-      setChatWidth(Math.min(Math.max(newWidth, MIN_WIDTH), MAX_WIDTH));
-    };
-    const handlePointerUp = () => {
-      setIsDragging(false);
-      document.removeEventListener("pointermove", handlePointerMove);
-      document.removeEventListener("pointerup", handlePointerUp);
-    };
-    document.addEventListener("pointermove", handlePointerMove);
-    document.addEventListener("pointerup", handlePointerUp);
-  };
-
   return (
-    <div className={`h-screen w-full overflow-hidden bg-[#050505] ${isDragging ? "select-none" : ""}`}>
+    <div className="h-screen w-full bg-[#050505]">
       <AnimatePresence mode="wait">
-        {agentState === "disconnected" ? (
+        {!["listening", "thinking", "speaking", "idle"].includes(agentState) ? (
           <SessionConfigForm
             key="config"
             config={config}
@@ -1006,31 +1111,10 @@ function SimpleVoiceAssistant({
             onCancelEdit={onCancelEdit}
           />
         ) : (
-          <motion.div key="connected" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex h-full w-full">
-            <main className="flex-1 h-full flex flex-col relative bg-[#000000]">
-              <div className="flex-1 flex items-center justify-center p-12">
-                <AgentVisualizer />
-              </div>
-              <div className="absolute bottom-12 left-0 right-0 flex justify-center">
-                <ControlBar onConnectButtonClicked={onConnectButtonClicked} isChatVisible={isChatVisible} setIsChatVisible={setIsChatVisible} />
-              </div>
-            </main>
-            <motion.aside
-              initial={false}
-              animate={{ width: isChatVisible ? chatWidth : 0, opacity: isChatVisible ? 1 : 0 }}
-              transition={{ duration: isDragging ? 0 : 0.3, ease: "easeInOut" }}
-              className="relative min-w-0 h-full border-l border-white/5 bg-black/10 backdrop-blur-md overflow-hidden flex-shrink-0"
-            >
-              {isChatVisible && (
-                <div onPointerDown={handlePointerDown} className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-10 hover:bg-white/10 active:bg-white/20 transition-colors" />
-              )}
-              <div style={{ width: chatWidth }} className="h-full">
-                <TranscriptionView />
-              </div>
-            </motion.aside>
-            <RoomAudioRenderer />
-            <NoAgentNotification state={agentState} />
-          </motion.div>
+          <ActiveVoiceAssistantView 
+            key="active" 
+            onConnectButtonClicked={onConnectButtonClicked} 
+          />
         )}
       </AnimatePresence>
     </div>
@@ -1158,17 +1242,22 @@ function BotLibraryView({
                     </div>
                   </div>
                   <div className="p-5 relative">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-lg font-bold text-white tracking-tight truncate pr-4">{bot.name}</h3>
-                      <span className="text-[10px] items-center px-1.5 py-0.5 rounded-md bg-white/5 text-[#00E3AA] font-mono border border-white/5">{bot.avatar_id}</span>
+                    <div className="flex flex-col mb-3">
+                      <h3 className="text-lg font-bold text-[#00E3AA] tracking-tight truncate pr-4 font-mono">{bot.session_key}</h3>
+                      <span className="text-[12px] text-neutral-400 font-medium">{bot.name}</span>
                     </div>
                     <div className="space-y-2.5">
                       <div className="flex items-center gap-2.5 text-[12px] text-[#9ca3af]"><div className="w-5 h-5 rounded-md bg-white/5 flex items-center justify-center text-[#4b5563]"><LinkIcon size={12} /></div><span className="truncate max-w-[180px]">{bot.openclaw_url}</span></div>
-                      <div className="flex items-center gap-2.5 text-[12px] text-[#9ca3af]"><div className="w-5 h-5 rounded-md bg-white/5 flex items-center justify-center text-[#4b5563]"><HashIcon2 size={12} /></div><span className="truncate">{bot.session_key}</span></div>
+                      <div className="flex items-center gap-2.5 text-[12px] text-[#9ca3af]"><div className="w-5 h-5 rounded-md bg-white/5 flex items-center justify-center text-[#4b5563]"><UserIcon size={12} /></div><span className="truncate">Avatar: {bot.avatar_id}</span></div>
                     </div>
                     <div className="mt-6 flex items-center justify-between pt-4 border-t border-white/5">
                       <div className="flex items-center gap-1.5 text-[11px] text-[#6b7280]"><ClockIcon size={12} /><span>Saved {new Date(bot.created_at).toLocaleDateString()}</span></div>
-                      <div className="text-[12px] font-bold text-[#00E3AA] uppercase tracking-wider group-hover:translate-x-1 transition-transform flex items-center gap-1">Connect <ChevronDownIcon className="-rotate-90" size={12} /></div>
+                      <button className="px-4 py-1.5 rounded-lg bg-[#00E3AA] hover:bg-[#00c994] text-black text-[12px] font-bold uppercase tracking-wider transition-all transform hover:scale-105 active:scale-95 shadow-[0_4px_12px_rgba(0,227,170,0.2)] flex items-center gap-1.5">
+                        Connect 
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                          <polygon points="5 3 19 12 5 21 5 3"/>
+                        </svg>
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -1219,17 +1308,27 @@ function ConversationsListView({
                 <tr className="border-b border-white/5 bg-white/5">
                   <th className="px-6 py-4 text-[12px] font-bold uppercase tracking-wider text-[#6b7280]">Status</th>
                   <th className="px-6 py-4 text-[12px] font-bold uppercase tracking-wider text-[#6b7280]">Bot Detail</th>
-                  <th className="px-6 py-4 text-[12px] font-bold uppercase tracking-wider text-[#6b7280]">Platform</th>
+                  <th className="px-6 py-4 text-[12px] font-bold uppercase tracking-wider text-[#6b7280]">Duration</th>
                   <th className="px-6 py-4 text-[12px] font-bold uppercase tracking-wider text-[#6b7280]">Date/Time</th>
                   <th className="px-6 py-4 text-[12px] font-bold uppercase tracking-wider text-[#6b7280]">Action</th>
                 </tr>
               </thead>
               <tbody>
-                {conversations.map((conv) => (
-                  <tr key={conv.id} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors cursor-pointer group" onClick={() => onSelect(conv)}>
-                    <td className="px-6 py-4">
-                      <span className="px-2 py-1 rounded-full bg-green-500/10 text-green-500 text-[10px] font-bold uppercase border border-green-500/20">{conv.status || "Ended"}</span>
-                    </td>
+                {conversations.map((conv) => {
+                  const getStatusStyles = (status: string) => {
+                    const normalized = status?.toLowerCase();
+                    if (normalized === "completed") return "bg-green-500/10 text-green-500 border-green-500/20";
+                    if (normalized === "terminated") return "bg-red-500/10 text-red-500 border-red-500/20";
+                    if (normalized === "failed" || normalized === "interrupted") return "bg-yellow-500/10 text-yellow-500 border-yellow-500/20";
+                    return "bg-gray-500/10 text-gray-500 border-gray-500/20";
+                  };
+                  return (
+                    <tr key={conv.id} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors cursor-pointer group" onClick={() => onSelect(conv)}>
+                      <td className="px-6 py-4">
+                        <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase border ${getStatusStyles(conv.status || "Completed")}`}>
+                          {conv.status || "Completed"}
+                        </span>
+                      </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-lg overflow-hidden bg-white/10 flex flex-shrink-0 items-center justify-center text-[#9ca3af]">
@@ -1250,7 +1349,7 @@ function ConversationsListView({
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="text-[#9ca3af] text-[13px]">LiveKit</span>
+                      <span className="text-[#9ca3af] text-[13px]">{conv.duration ? `${conv.duration}s` : '0s'}</span>
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex flex-col">
@@ -1259,10 +1358,11 @@ function ConversationsListView({
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                       <button className="px-4 py-1.5 rounded-lg bg-white/5 hover:bg-[#00E3AA]/20 hover:text-[#00E3AA] transition-all text-[12px] font-semibold text-white/70">View History</button>
+                      <button className="px-4 py-1.5 rounded-lg bg-white/5 hover:bg-[#00E3AA]/20 hover:text-[#00E3AA] transition-all text-[12px] font-semibold text-white/70">View History</button>
                     </td>
                   </tr>
-                ))}
+                );
+              })}
               </tbody>
             </table>
           </div>
@@ -1293,7 +1393,13 @@ function ConversationDetailView({
               <p className="text-[#6b7280] text-sm mt-1">{new Date(conversation.created_at).toLocaleString()} • {conversation.duration}s</p>
             </div>
           </div>
-          <span className="px-3 py-1 rounded-full bg-green-500/10 text-green-500 text-[12px] font-bold uppercase border border-green-500/20">Saved</span>
+          <span className={`px-3 py-1 rounded-full text-[12px] font-bold uppercase border ${
+            conversation.status?.toLowerCase() === "completed" ? "bg-green-500/10 text-green-500 border-green-500/20" :
+            conversation.status?.toLowerCase() === "terminated" ? "bg-red-500/10 text-red-500 border-red-500/20" :
+            "bg-yellow-500/10 text-yellow-500 border-yellow-500/20"
+          }`}>
+            {conversation.status || "Completed"}
+          </span>
         </header>
 
         <div className="space-y-6">
@@ -1315,5 +1421,187 @@ function ConversationDetailView({
         </div>
       </div>
     </div>
+  );
+}
+
+// ─── Direct Call Dashboard ───────────────────────────────────────────────────
+const AIGlowingOrb = () => {
+  return (
+    <div className="relative w-40 h-40 mb-10 flex items-center justify-center">
+      {/* Massive subtle outer pulse */}
+      <motion.div
+        className="absolute w-full h-full rounded-full bg-[#00E3AA]/10 blur-[40px]"
+        animate={{ scale: [1, 2, 1], opacity: [0.3, 0.6, 0.3] }}
+        transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
+      />
+      {/* Secondary breathing ring */}
+      <motion.div
+        className="absolute w-32 h-32 rounded-full border border-[#00E3AA]/30"
+        animate={{ scale: [1, 1.4, 1], opacity: [0.8, 0, 0.8] }}
+        transition={{ duration: 3, repeat: Infinity, ease: "easeInOut", delay: 0.5 }}
+      />
+      {/* Rotational aura */}
+      <motion.div
+        className="absolute w-28 h-28 rounded-full bg-gradient-to-tr from-[#00E3AA]/40 to-transparent blur-xl"
+        animate={{ rotate: [0, 360] }}
+        transition={{ duration: 5, repeat: Infinity, ease: "linear" }}
+      />
+      {/* Inner pulsing core */}
+      <motion.div
+        className="absolute w-20 h-20 rounded-full bg-gradient-to-br from-white via-[#00E3AA] to-[#00A080] shadow-[0_0_50px_rgba(0,227,170,1)] flex items-center justify-center"
+        animate={{ scale: [1, 1.15, 1] }}
+        transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
+      >
+        <div className="w-full h-full rounded-full bg-white/20 blur-sm" />
+        <div className="absolute w-12 h-12 rounded-full bg-white/50 blur-md mix-blend-overlay" />
+      </motion.div>
+    </div>
+  );
+};
+
+function DirectCallDashboard({
+  config,
+  onStartCall,
+  onBack,
+  autoStart = false,
+}: {
+  config: typeof DEFAULTS;
+  onStartCall: () => void;
+  onBack: () => void;
+  autoStart?: boolean;
+}) {
+  const { state: agentState, audioTrack, videoTrack } = useVoiceAssistant();
+  const [isConnecting, setIsConnecting] = useState(autoStart || false);
+  const selectedAvatar = AVATARS.find(a => a.id === config.avatarId) || AVATARS[0];
+
+  const handleStartCall = async () => {
+    setIsConnecting(true);
+    // Remove hardcoded timeout, let connection state be purely dynamic
+    try {
+      onStartCall();
+    } catch (e) {
+      console.error(e);
+      setIsConnecting(false);
+    }
+  };
+
+  // Keep track of if we've successfully connected so we can detect a disconnection
+  const hasConnectedRef = useRef(false);
+  const isAgentInteractive = ["listening", "thinking", "speaking", "idle"].includes(agentState);
+
+  useEffect(() => {
+    if (isAgentInteractive) {
+      hasConnectedRef.current = true;
+    } else if (agentState === "disconnected" && hasConnectedRef.current) {
+      // If we were connected and then the agent disconnected, return to library
+      onBack();
+    }
+  }, [agentState, isAgentInteractive, onBack]);
+
+  const room = useRoomContext();
+  useEffect(() => {
+    const handleDisconnected = () => {
+      if (isConnecting) setIsConnecting(false);
+      onBack();
+    };
+    room.on(RoomEvent.Disconnected, handleDisconnected);
+    return () => {
+      room.off(RoomEvent.Disconnected, handleDisconnected);
+    };
+  }, [room, isConnecting, onBack]);
+
+  // Transition to the active view once the agent is no longer pending
+  if (isAgentInteractive) {
+    return <ActiveVoiceAssistantView onConnectButtonClicked={onStartCall} />;
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className="flex flex-col items-center justify-center h-full p-6 text-center"
+    >
+      <div className="w-full max-w-2xl p-12 relative flex flex-col items-center justify-center">
+        {/* Removed box background and border for a seamless dark theme integration */}
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-[#00E3AA]/5 rounded-full blur-[100px] pointer-events-none" />
+        
+        {/* Back button intentionally removed during connecting state */}
+
+        <div className="relative mb-10 min-h-[300px] flex flex-col items-center justify-center">
+          {isConnecting ? (
+            <div className="flex flex-col items-center justify-center py-10">
+              <AIGlowingOrb />
+              <motion.h2 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.5 }}
+                className="text-2xl font-bold text-white mt-4 tracking-wide flex items-center"
+              >
+                Connecting to bot
+                <motion.span
+                  className="inline-block"
+                  animate={{ opacity: [0, 1, 0] }}
+                  transition={{ duration: 1.5, repeat: Infinity, times: [0, 0.5, 1] }}
+                >
+                  .
+                </motion.span>
+                <motion.span
+                  className="inline-block"
+                  animate={{ opacity: [0, 1, 0] }}
+                  transition={{ duration: 1.5, repeat: Infinity, times: [0, 0.5, 1], delay: 0.2 }}
+                >
+                  .
+                </motion.span>
+                <motion.span
+                  className="inline-block"
+                  animate={{ opacity: [0, 1, 0] }}
+                  transition={{ duration: 1.5, repeat: Infinity, times: [0, 0.5, 1], delay: 0.4 }}
+                >
+                  .
+                </motion.span>
+              </motion.h2>
+            </div>
+          ) : (
+            <>
+              <div className="w-56 h-56 mx-auto rounded-full p-1.5 border-2 border-[#00E3AA]/30 shadow-[0_0_40px_rgba(0,227,170,0.15)] relative">
+                <div className="w-full h-full rounded-full overflow-hidden relative">
+                  <Image 
+                    src={selectedAvatar.image} 
+                    alt={selectedAvatar.name} 
+                    fill 
+                    className="object-cover transition-all"
+                  />
+                </div>
+                {/* Status indicator */}
+                <div className="absolute bottom-4 right-4 w-6 h-6 rounded-full bg-[#00E3AA] border-4 border-[#0A0A0A] shadow-lg animate-pulse" />
+              </div>
+            </>
+          )}
+        </div>
+
+        {!isConnecting && (
+          <>
+            <h1 className="text-4xl font-extrabold text-white mb-3 tracking-tight">
+              {config.botName || selectedAvatar.name}
+            </h1>
+            <p className="text-neutral-400 text-lg mb-10 max-w-md mx-auto leading-relaxed">
+              Your AI assistant is ready. Click the button below to start your conversation.
+            </p>
+          </>
+        )}
+
+        {!isConnecting && (
+          <button
+            onClick={handleStartCall}
+            className="group relative px-12 py-5 bg-[#00E3AA] hover:bg-[#00c994] text-black font-bold text-xl rounded-2xl transition-all duration-300 transform hover:scale-105 active:scale-95 shadow-[0_20px_40px_-12px_rgba(0,227,170,0.4)] flex items-center gap-3 mx-auto"
+          >
+            <svg className="group-hover:translate-x-1 transition-transform" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            Start Call
+          </button>
+        )}
+      </div>
+    </motion.div>
   );
 }
