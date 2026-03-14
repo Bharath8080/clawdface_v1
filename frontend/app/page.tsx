@@ -44,6 +44,15 @@ const DEFAULTS = {
   botName:      "",
 };
 
+const stripSessionKey = (key: string) => {
+  if (!key) return "";
+  // Remove internal prefix agent:main:
+  let clean = key.replace(/^agent:main:/, "");
+  // Remove unique timestamp suffix (hyphen followed by 14 digits suffix like -20260314203015)
+  clean = clean.replace(/-\d{14}$/, "");
+  return clean;
+};
+
 // ─── Avatars ────────────────────────────────────────────────────────────────
 const AVATARS = [
   { id: "182b03e8", name: "Kevin",    image: "/avatars/kevin.jpg" },
@@ -184,6 +193,7 @@ export default function Page() {
   const segmentsMapRef = useRef<Map<string, any>>(new Map());
   const configRef = useRef(config);
   const activeSessionRef = useRef(activeSession);
+  const technicalSessionKeyRef = useRef<string>("");
   
   // Sync refs with state to ensure handleDisconnected sees latest values
   useEffect(() => {
@@ -205,6 +215,9 @@ export default function Page() {
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
+          if (parsed.sessionKey) {
+            parsed.sessionKey = stripSessionKey(parsed.sessionKey);
+          }
           setConfig({ ...DEFAULTS, ...parsed });
         } catch (e) {}
       }
@@ -226,8 +239,12 @@ export default function Page() {
             
             // Fetch last config if nothing in localStorage
             if (!saved && profile.last_config) {
-              setConfig({ ...DEFAULTS, ...profile.last_config });
-              localStorage.setItem("openclaw_config", JSON.stringify(profile.last_config));
+              const lastCfg = { ...DEFAULTS, ...profile.last_config };
+              if (lastCfg.sessionKey) {
+                lastCfg.sessionKey = stripSessionKey(lastCfg.sessionKey);
+              }
+              setConfig(lastCfg);
+              localStorage.setItem("openclaw_config", JSON.stringify(lastCfg));
             }
           }
         } catch (err) {
@@ -332,8 +349,14 @@ export default function Page() {
       botName: activeConfig.botName || (AVATARS.find(a => a.id === activeConfig.avatarId)?.name) || "Bot"
     };
 
-    // Update config state to ensure save logic has correct session key
-    setConfig(finalConfig);
+    // Update config state but keep sessionKey clean for UI
+    setConfig({
+      ...finalConfig,
+      sessionKey: stripSessionKey(finalSessionKey)
+    });
+
+    // Store the full technical session key for history persistence
+    technicalSessionKeyRef.current = finalSessionKey;
 
     console.log("🚀 Connecting with config:", finalConfig);
     const response = await fetch("/api/connection-details", {
@@ -413,8 +436,9 @@ export default function Page() {
           const selectedAvatar = AVATARS.find(a => a.id === currentConfig.avatarId) || AVATARS[0];
           console.log("💾 Persisting conversation to Supabase via Server Action...");
           
-          // Use sessionKey as bot_name for history but strip the internal agent:main: prefix
-          const cleanHistoryName = currentConfig.sessionKey.replace(/^agent:main:/, "");
+          // Use technicalSessionKey (full timestamped) for history but strip prefix
+          const fullKey = technicalSessionKeyRef.current || currentConfig.sessionKey;
+          const cleanHistoryName = fullKey.replace(/^agent:main:/, "");
           const data = await createConversationAction({
             user_email: user.email,
             bot_name: cleanHistoryName || currentConfig.botName || selectedAvatar.name || "Unknown Session",
@@ -587,12 +611,12 @@ export default function Page() {
                   const newConfig = {
                     openclawUrl: bot.openclaw_url,
                     gatewayToken: bot.gateway_token,
-                    sessionKey: bot.session_key,
+                    sessionKey: stripSessionKey(bot.session_key || ""),
                     avatarId: bot.avatar_id,
                     botName: bot.name,
                   };
                   setConfig(newConfig); // ensure state is updated for dashboard
-                  const autoId = generateSessionId(bot.session_key || bot.name || "bot");
+                  const autoId = generateSessionId(newConfig.sessionKey || newConfig.botName || "bot");
                   onConnectButtonClicked(autoId, newConfig);
                   setActiveSession("DirectCall");
                 }}
@@ -601,7 +625,7 @@ export default function Page() {
                   setConfig({
                     openclawUrl: bot.openclaw_url,
                     gatewayToken: bot.gateway_token,
-                    sessionKey: bot.session_key,
+                    sessionKey: stripSessionKey(bot.session_key || ""),
                     avatarId: bot.avatar_id,
                     botName: bot.name,
                   });
@@ -1243,7 +1267,9 @@ function BotLibraryView({
                   </div>
                   <div className="p-5 relative">
                     <div className="flex flex-col mb-3">
-                      <h3 className="text-lg font-bold text-[#00E3AA] tracking-tight truncate pr-4 font-mono">{bot.session_key}</h3>
+                      <h3 className="text-lg font-bold text-[#00E3AA] tracking-tight truncate pr-4 font-mono">
+                        {(bot.session_key || "").replace(/^agent:main:/, "") || "bot"}
+                      </h3>
                       <span className="text-[12px] text-neutral-400 font-medium">{bot.name}</span>
                     </div>
                     <div className="space-y-2.5">
