@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { db, agents } from '@/drizzle';
+import { db, agents, bots, profiles } from '@/drizzle';
 import { eq } from 'drizzle-orm';
 
 // Helper to generate unique timestamped emails
@@ -17,7 +17,13 @@ function generateAgentEmail(name: string): string {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { name, avatarId, openclawUrl, gatewayToken, agentType, config, botId } = body;
+    let { name, avatarId, openclawUrl, gatewayToken, agentType, config, botId, userEmail } = body;
+
+    // 1. Sanitize Inputs
+    if (avatarId) avatarId = avatarId.replace(/^:/, '').trim();
+    if (openclawUrl) openclawUrl = openclawUrl.trim();
+    if (name) name = name.trim();
+    if (gatewayToken) gatewayToken = gatewayToken.trim();
 
     if (!name || !avatarId || !openclawUrl || !gatewayToken) {
       return NextResponse.json(
@@ -27,8 +33,35 @@ export async function POST(request: Request) {
     }
 
     const email = generateAgentEmail(name);
+    let linkedBotId = botId;
 
-    // Create new agent with link to the bot library
+    // 2. Optional: Link to User Library if userEmail is provided
+    if (userEmail) {
+      const [userProfile] = await db
+        .select()
+        .from(profiles)
+        .where(eq(profiles.email, userEmail.trim()))
+        .limit(1);
+
+      if (userProfile) {
+        // Automatically create a matching bot in the user's Library so it shows up in the UI
+        const [newBot] = await db
+          .insert(bots)
+          .values({
+            user_id: userProfile.id,
+            name: name,
+            avatar_id: avatarId,
+            openclaw_url: openclawUrl,
+            gateway_token: gatewayToken,
+            session_key: `api-gen-${Date.now()}`,
+          })
+          .returning();
+        
+        linkedBotId = newBot.id;
+      }
+    }
+
+    // 3. Create the Agent entry (for external Bridge API access)
     const [newAgent] = await db
       .insert(agents)
       .values({
@@ -39,7 +72,7 @@ export async function POST(request: Request) {
         gateway_token: gatewayToken,
         agent_type: agentType || 'openclaw',
         config: config || {},
-        bot_id: botId || null,
+        bot_id: linkedBotId || null,
       })
       .returning();
 
@@ -55,6 +88,7 @@ export async function POST(request: Request) {
         config: newAgent.config,
         botId: newAgent.bot_id,
         created_at: newAgent.created_at,
+        linkedToLibrary: !!linkedBotId,
       },
       { status: 201 }
     );
