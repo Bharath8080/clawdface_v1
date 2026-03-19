@@ -4,10 +4,10 @@ import { eq } from 'drizzle-orm';
 
 export async function GET(
   request: Request,
-  { params }: { params: { email: string } }
+  { params }: { params: Promise<{ email: string }> }
 ) {
   try {
-    const { email } = params;
+    const { email } = await params;
 
     if (!email) {
       return NextResponse.json({ error: 'Missing email parameter' }, { status: 400 });
